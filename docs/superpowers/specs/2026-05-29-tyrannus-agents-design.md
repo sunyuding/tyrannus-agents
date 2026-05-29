@@ -104,6 +104,21 @@ tyrannus-agents/
 │   │   └── permissions.py            # Role-based access control
 │   └── config.py                     # Env vars, shared settings
 │
+├── api/                               # FastAPI REST layer (dashboard backend)
+│   ├── server.py                      # FastAPI app, CORS, lifespan
+│   ├── deps.py                        # Dependency injection (DB session, current user)
+│   ├── middleware/
+│   │   ├── auth.py                    # JWT / API key auth middleware
+│   │   └── rate_limit.py             # Rate limiting middleware
+│   └── routes/
+│       ├── tasks.py                   # CRUD tasks, status transitions
+│       ├── approvals.py               # List pending, resolve, audit trail
+│       ├── logs.py                    # Query logs with filters
+│       ├── tools.py                   # Tool registry: list, whitelist, metrics
+│       ├── documents.py               # KB document management
+│       ├── users.py                   # User management, role assignment
+│       └── health.py                  # Health check, readiness probe
+│
 ├── servers/                           # Independent MCP servers (one per module)
 │   ├── knowledge-base/               # Module 7
 │   │   ├── server.py                 # MCP tool registration & entry point
@@ -132,7 +147,7 @@ tyrannus-agents/
 │   └── superpowers/specs/
 ├── tests/
 ├── pyproject.toml                     # uv workspace
-├── docker-compose.yml                 # PostgreSQL + ChromaDB
+├── docker-compose.yml                 # PostgreSQL (ChromaDB runs in-process)
 ├── .env.example
 └── README.md
 ```
@@ -251,6 +266,86 @@ logs
 ├── message: text
 ├── context: JSONB
 └── created_at: timestamp
+
+tool_registry
+├── id: UUID (PK)
+├── module: str (which MCP server owns this tool)
+├── tool_name: str (unique)
+├── description: text
+├── input_schema: JSONB
+├── requires_approval: bool
+├── allowed_roles: JSONB (list of roles that can invoke)
+├── enabled: bool (whitelist toggle)
+├── created_at: timestamp
+└── updated_at: timestamp
+
+browser_tasks
+├── id: UUID (PK)
+├── task_id: UUID (FK → tasks, nullable)
+├── action: str (post_facebook, post_instagram, read_notifications, ...)
+├── payload: JSONB
+├── status: enum (queued, running, completed, failed, cancelled)
+├── screenshot_path: str (nullable; captured on completion or failure)
+├── error_message: text (nullable)
+├── retry_count: int
+├── timeout_ms: int (default 30000)
+├── created_at: timestamp
+└── completed_at: timestamp (nullable)
+
+scheduled_posts
+├── id: UUID (PK)
+├── task_id: UUID (FK → tasks)
+├── platform: str (facebook, instagram, youtube, tiktok)
+├── draft_content: JSONB (text, images, video_id, etc.)
+├── publish_at: timestamp
+├── status: enum (scheduled, published, failed, cancelled)
+├── published_url: str (nullable)
+├── created_at: timestamp
+└── updated_at: timestamp
+
+published_posts
+├── id: UUID (PK)
+├── scheduled_post_id: UUID (FK → scheduled_posts, nullable)
+├── platform: str
+├── platform_post_id: str (nullable; external platform ID)
+├── published_url: str (nullable)
+├── published_at: timestamp
+├── engagement: JSONB (nullable; likes, shares, comments, views)
+└── created_at: timestamp
+
+contacts
+├── id: UUID (PK)
+├── company_name: str
+├── contact_name: str (nullable)
+├── email: str (nullable)
+├── phone: str (nullable)
+├── industry: str (nullable)
+├── source: str (find_leads, manual, import)
+├── icp_score: int (nullable; 0-100)
+├── icp_reasoning: text (nullable)
+├── status: enum (new, contacted, replied, qualified, lost)
+├── metadata: JSONB (enriched company data)
+├── created_at: timestamp
+└── updated_at: timestamp
+
+followups
+├── id: UUID (PK)
+├── contact_id: UUID (FK → contacts)
+├── scheduled_date: date
+├── action: str (call, email, meeting, demo)
+├── status: enum (pending, completed, skipped)
+├── note: text (nullable)
+├── created_at: timestamp
+└── completed_at: timestamp (nullable)
+
+metrics_snapshots
+├── id: UUID (PK)
+├── module: str
+├── metric_type: str (engagement, conversion, pipeline, etc.)
+├── data: JSONB (metric payload)
+├── period_start: timestamp
+├── period_end: timestamp
+└── created_at: timestamp
 ```
 
 **Post-MVP Tables (Phase 3+):**
@@ -260,8 +355,7 @@ conversations       # Chat session history (for customer service module)
 messages            # Individual messages within conversations
 reports             # Generated reports (financial, marketing, etc.)
 voice_logs          # STT/TTS interaction records
-contacts            # CRM contacts / prospects
-deals               # CRM deal pipeline
+deals               # CRM deal pipeline (contacts already in Phase 1)
 ```
 
 ### Knowledge Base (core/knowledge/)
@@ -446,6 +540,89 @@ Tool names follow DOCX §銷售開發與 CRM Agent.
 | `provision_access` | Grant access via API or Browser Agent |
 | `create_audit_record` | Log access change for compliance |
 
+## REST API Layer (Dashboard Backend)
+
+The Next.js dashboard and any external integrations communicate with the backend
+via a FastAPI REST API. This is the HTTP surface for CRUD operations, approvals,
+logs, and tool registry management.
+
+### API Server (`api/server.py`)
+
+FastAPI app with:
+- CORS configured for dashboard origin (`http://localhost:3000` dev, configurable prod)
+- Lifespan handler: connect DB engine on startup, dispose on shutdown
+- Auth middleware: JWT or API-key header validation
+- Rate limiting: per-IP and per-user token bucket (configurable via env)
+- Health endpoints: `/health` (liveness), `/ready` (DB + ChromaDB reachable)
+
+### Routes
+
+| Route | Method | Description | Auth |
+|-------|--------|-------------|------|
+| **Tasks** | | | |
+| `GET /api/tasks` | GET | List tasks (paginated, filterable by module/status/assignee) | read |
+| `GET /api/tasks/{id}` | GET | Get task detail with sub-tasks, approvals, tool_calls | read |
+| `POST /api/tasks` | POST | Create task (manual trigger) | write |
+| `PATCH /api/tasks/{id}` | PATCH | Update task status/assignment | write |
+| **Approvals** | | | |
+| `GET /api/approvals` | GET | List pending approvals (filterable by module) | read |
+| `GET /api/approvals/{id}` | GET | Get approval detail with task context | read |
+| `POST /api/approvals/{id}/resolve` | POST | Approve or reject (body: `{approved, note}`) | approve |
+| **Logs** | | | |
+| `GET /api/logs` | GET | Query logs (filterable by level/module/task_id, paginated) | read |
+| **Tool Registry** | | | |
+| `GET /api/tools` | GET | List registered tools (with module, approval flag, enabled) | read |
+| `PATCH /api/tools/{id}` | PATCH | Toggle enabled, update allowed_roles | admin |
+| `GET /api/tools/metrics` | GET | Tool call counts, avg duration, failure rate per tool | read |
+| **Documents** | | | |
+| `GET /api/documents` | GET | List indexed documents | read |
+| `GET /api/documents/{id}` | GET | Document detail with chunk count | read |
+| `DELETE /api/documents/{id}` | DELETE | Remove document and chunks from DB + ChromaDB | admin |
+| **Users** | | | |
+| `GET /api/users` | GET | List users | admin |
+| `POST /api/users` | POST | Create user with role | admin |
+| `PATCH /api/users/{id}` | PATCH | Update role/department | admin |
+| **Health** | | | |
+| `GET /health` | GET | Liveness probe (always 200) | none |
+| `GET /ready` | GET | Readiness (DB + ChromaDB reachable) | none |
+
+### API Response Envelope
+
+All API responses use a consistent format:
+
+```json
+{
+  "success": true,
+  "data": { ... },
+  "error": null,
+  "meta": { "total": 42, "page": 1, "limit": 20 }
+}
+```
+
+Error responses:
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": { "code": "FORBIDDEN", "message": "Insufficient permissions" },
+  "meta": null
+}
+```
+
+### Auth Middleware
+
+- **Phase 1:** API key in `Authorization: Bearer <key>` header. Keys stored in env,
+  mapped to user IDs. Simple but sufficient for single-company internal use.
+- **Phase 3:** JWT tokens issued by a login endpoint, refresh token rotation,
+  session management.
+
+### Rate Limiting
+
+- Default: 100 requests/min per IP, 300 requests/min per authenticated user.
+- Configurable via `API_RATE_LIMIT_PER_IP` and `API_RATE_LIMIT_PER_USER` env vars.
+- Returns `429 Too Many Requests` with `Retry-After` header.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -476,6 +653,9 @@ Tool names follow DOCX §銷售開發與 CRM Agent.
 dependencies = [
     "mcp[cli]>=1.0",
     "openai>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pyjwt>=2.9",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     "asyncpg>=0.29",
@@ -511,13 +691,25 @@ DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/tyrannus
 CHROMA_PERSIST_DIR=./data/chroma
 CHROME_CDP_PORT=9333
 CHROME_PROFILE_DIR=~/Library/Application Support/Google/Chrome/SocialMCP/
+
+# API server
+API_HOST=0.0.0.0
+API_PORT=8000
+API_KEY=tyrannus-dev-key-change-me
+API_CORS_ORIGINS=http://localhost:3000
+API_RATE_LIMIT_PER_IP=100
+API_RATE_LIMIT_PER_USER=300
+
+# Deployment
+ENV=development  # development | staging | production
+LOG_LEVEL=INFO
 ```
 
 ## Local Development
 
 ```bash
 # Start infrastructure
-docker compose up -d  # PostgreSQL + ChromaDB
+docker compose up -d  # PostgreSQL (ChromaDB runs in-process, no separate service needed)
 
 # Run migrations
 uv run alembic upgrade head
@@ -538,9 +730,14 @@ claude mcp add tyrannus-sales -- uv run servers/sales-crm/server.py
 # claude mcp add tyrannus-finance -- uv run servers/finance/server.py
 # claude mcp add tyrannus-it -- uv run servers/it-support/server.py
 
+# Start API server
+uv run uvicorn api.server:app --reload --port 8000
+# API available at http://localhost:8000
+# Docs at http://localhost:8000/docs
+
 # Start minimal dashboard (Phase 1)
 cd web && pnpm install && pnpm dev
-# Dashboard available at http://localhost:3000
+# Dashboard available at http://localhost:3000 (proxies API to :8000)
 ```
 
 ## MVP Scope
@@ -573,17 +770,19 @@ Upload document / input topic
 Per DOCX: build the orchestrator as Day-1 infrastructure, then the knowledge
 base as the shared brain for all modules.
 
-1. **Core setup** — pyproject.toml, uv workspace, docker-compose, .env.example
-2. **core/db** — All MVP tables (users, roles, tasks, approvals, tool_calls, documents, document_chunks, assets, logs), Alembic migrations
+1. **Core setup** — pyproject.toml, uv workspace, docker-compose, .env.example, Dockerfiles
+2. **core/db** — All Phase 1 tables (users, roles, tasks, approvals, tool_calls, documents, document_chunks, assets, logs, tool_registry, browser_tasks, scheduled_posts, published_posts, contacts, followups, metrics_snapshots), Alembic migrations
 3. **core/orchestrator (skeleton)** — Intent classification, single-module routing, approval gate, retry/error handling with backoff, audit logging
 4. **core/knowledge** — ChromaDB ingest + search + compare + summarize + decision brief
 5. **core/approval** — Approval workflow with role-based permissions
 6. **core/auth** — Role-based access control
-7. **MCP tool registry** — Module/tool schema registration, whitelist, permission mapping
-8. **Browser Agent task layer** — Queue model, task status, screenshot/log hooks
-9. **web/** — Minimal Next.js dashboard for tasks, approvals, logs, and tool registry
-10. **servers/knowledge-base** — MCP server with all KB tools
-11. **Integration test** — Upload doc → search → summarize → decision brief
+7. **core/tool_registry** — Module/tool schema registration, whitelist, permission mapping, enabled toggle
+8. **Browser Agent task layer** — Queue model (browser_tasks table), task status, screenshot/log hooks, timeout/retry policy
+9. **api/** — FastAPI REST layer with auth middleware, rate limiting, all CRUD routes for dashboard
+10. **web/** — Minimal Next.js dashboard for tasks, approvals, logs, and tool registry
+11. **servers/knowledge-base** — MCP server with all KB tools
+12. **Integration test** — Upload doc → search → summarize → decision brief
+13. **CI/CD pipeline** — lint, typecheck, unit, integration, frontend build, migration check, Docker build, security scan
 
 ### Phase 2: High-ROI Modules
 
@@ -605,9 +804,151 @@ Per DOCX: knowledge base (done in Phase 1), self-media content factory, and sale
 5. **servers/it-support** — Access requests, provisioning, audit
 6. **core/tools/tts + stt** — Voice I/O for personal assistant mode
 7. **core/tools/video** — Video generation, subtitle burning, thumbnail creation
-8. **Post-MVP tables** — conversations, messages, reports, voice_logs, contacts, deals
+8. **Post-MVP tables** — conversations, messages, reports, voice_logs, deals
+
+## Deployment
+
+### Container Images
+
+```text
+# Backend (API + MCP servers)
+Dockerfile.backend
+├── Base: python:3.12-slim
+├── Install: uv, system deps (libpq-dev for asyncpg)
+├── Copy: pyproject.toml, uv.lock, core/, api/, servers/
+├── CMD: uvicorn api.server:app --host 0.0.0.0 --port 8000
+└── HEALTHCHECK: curl -f http://localhost:8000/health
+
+# Frontend (Next.js dashboard)
+Dockerfile.web
+├── Base: node:20-slim (build stage) + node:20-slim (runtime)
+├── Install: pnpm
+├── Build: pnpm install && pnpm build
+├── CMD: pnpm start
+└── HEALTHCHECK: curl -f http://localhost:3000
+```
+
+### Docker Compose (Production-like)
+
+> ChromaDB uses `PersistentClient` (in-process, file-based). No separate
+> ChromaDB server is needed. The `chromadata` volume persists the index.
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    volumes: [pgdata:/var/lib/postgresql/data]
+    environment: [POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB]
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 5s
+
+  api:
+    build: { dockerfile: Dockerfile.backend }
+    depends_on: { postgres: { condition: service_healthy } }
+    environment: [DATABASE_URL, OPENAI_API_KEY, API_KEY, CHROMA_PERSIST_DIR=/data/chroma]
+    volumes: [chromadata:/data/chroma]
+    ports: ["8000:8000"]
+    healthcheck:
+      test: curl -f http://localhost:8000/health
+      interval: 10s
+
+  web:
+    build: { dockerfile: Dockerfile.web }
+    depends_on: [api]
+    environment: [NEXT_PUBLIC_API_URL=http://api:8000]
+    ports: ["3000:3000"]
+    healthcheck:
+      test: curl -f http://localhost:3000
+      interval: 10s
+
+volumes:
+  pgdata:
+  chromadata:
+```
+
+### Environment Tiers
+
+| Variable | Development | Staging | Production |
+|----------|-------------|---------|------------|
+| `ENV` | development | staging | production |
+| `DATABASE_URL` | localhost:5432/tyrannus | staging-db/tyrannus | prod-db/tyrannus |
+| `API_KEY` | dev-key | rotated staging key | rotated prod key |
+| `OPENAI_API_KEY` | personal key | org staging key | org prod key |
+| `LOG_LEVEL` | DEBUG | INFO | INFO |
+| `API_CORS_ORIGINS` | `http://localhost:3000` | staging domain | prod domain |
+
+### Database Operations
+
+- **Migrations:** `alembic upgrade head` run before every deployment. No destructive migrations without explicit approval.
+- **Backup:** PostgreSQL `pg_dump` daily (staging), hourly (production). Stored in object storage.
+- **Restore:** Tested monthly. Documented in `scripts/db-restore.sh`.
+- **ChromaDB persistence:** Volume mount at `CHROMA_PERSIST_DIR`. Backed up alongside PostgreSQL.
+
+### Health Checks
+
+| Endpoint | Check | Healthy Response |
+|----------|-------|------------------|
+| `GET /health` | API process alive | `200 {"status": "ok"}` |
+| `GET /ready` | DB connection + ChromaDB reachable | `200 {"status": "ready", "db": "ok", "chroma": "ok"}` |
+
+### Release Workflow
+
+```text
+Code merged to main
+  │
+  ▼
+CI Pipeline (automated)
+  ├── Stage 1: lint + typecheck (backend + frontend)
+  ├── Stage 2: unit tests (backend + frontend + build)
+  ├── Stage 3: integration tests (real DB)
+  ├── Stage 4: migration round-trip check
+  ├── Stage 5: Docker image build
+  ├── Stage 6: security scan (pip-audit, bandit, secret grep)
+  └── Stage 7: E2E smoke (backend MCP + frontend Playwright)
+  │
+  ▼
+All gates pass?
+  │ No → PR blocked, fix required
+  │ Yes ↓
+  ▼
+Deploy to staging (automated)
+  ├── docker compose up (staging env)
+  ├── alembic upgrade head
+  ├── POST /ready → 200?
+  └── Run E2E smoke against staging
+  │
+  ▼
+Staging smoke passes?
+  │ No → Rollback staging, alert team
+  │ Yes ↓
+  ▼
+Manual approval (team lead / PM)
+  │
+  ▼
+Deploy to production
+  ├── docker compose up (prod env)
+  ├── alembic upgrade head
+  ├── POST /ready → 200?
+  ├── POST /health → 200?
+  └── Canary: monitor error rate for 10 min
+  │
+  ▼
+Post-deploy healthy?
+  │ No → Rollback: docker compose down + alembic downgrade -1
+  │ Yes → Done ✓
+```
+
+### Log Retention
+
+- Development: stdout only, no retention.
+- Staging: 7 days in `logs` table, structured JSON to stdout.
+- Production: 90 days in `logs` table, structured JSON to stdout (forwarded to log aggregator).
+- `logs` table rows are append-only. No UPDATE or DELETE permitted on logs (enforced by DB trigger or application-level check).
 
 ## Security
+
+### Principles
 
 - All tool calls logged to `tool_calls` table for audit
 - All orchestrator decisions logged to `logs` table
@@ -617,3 +958,20 @@ Per DOCX: knowledge base (done in Phase 1), self-media content factory, and sale
 - Browser sessions use isolated Chrome profile (SocialMCP)
 - Database credentials never exposed through MCP tools
 - Tool whitelist per module — agents cannot call tools outside their scope
+
+### Pre-Launch Security Checklist
+
+| # | Requirement | Enforcement |
+|---|-------------|-------------|
+| 1 | Tool whitelist enforced in code | `tool_registry.enabled` checked before every dispatch; unknown tools rejected |
+| 2 | Role-based access control tested | Unit + integration tests for all role × module × permission combos |
+| 3 | Approval required for high-risk actions | `tool_registry.requires_approval == True` for: publish, send_email, finance ops, access changes |
+| 4 | Audit log immutable | `logs` table: no UPDATE/DELETE allowed; append-only enforced |
+| 5 | No secrets in logs | `context` JSONB scrubbed of `*_key`, `*_token`, `*_password` fields before insert |
+| 6 | API auth on all non-health endpoints | Auth middleware rejects unauthenticated requests with 401 |
+| 7 | Rate limiting on API | Per-IP and per-user limits; 429 returned when exceeded |
+| 8 | Destructive actions require double confirmation | Delete endpoints (documents, users) require `confirm: true` in request body |
+| 9 | No credential exposure through MCP tools | MCP tool outputs never contain DB connection strings, API keys, or tokens |
+| 10 | Browser CDP isolated | Chrome runs in SocialMCP profile only; CDP port not exposed externally |
+| 11 | CORS restricted | API only accepts requests from configured `API_CORS_ORIGINS` |
+| 12 | Input validation at boundaries | All API route handlers validate input with Pydantic models; reject malformed requests |
