@@ -398,17 +398,19 @@ Registered as `tyrannus-sales`.
 
 **Tools (MVP — Phase 2):**
 
+Tool names follow DOCX §銷售開發與 CRM Agent.
+
 | Tool | Input | Output | Approval |
 | ---- | ----- | ------ | -------- |
-| `search_prospects` | industry, criteria | Company list with basic info | No |
-| `enrich_prospect` | company_name or url | Scraped company details | No |
-| `qualify_prospect` | prospect_id, icp_criteria | Fit score + reasoning | No |
-| `generate_outreach` | prospect_id, template, tone | Personalized email draft | No |
-| `send_outreach` | draft_id | Sends email | Yes |
-| `log_crm_note` | prospect_id, note | CRM record updated | No |
-| `set_followup` | prospect_id, date, action | Reminder created | No |
-| `check_replies` | prospect_id or all | Reply status summary | No |
-| `generate_next_action` | prospect_id | Suggested next step | No |
+| `find_leads` | industry, criteria | Company list with basic info | No |
+| `enrich_company` | company_name or url | Scraped company details | No |
+| `score_lead` | lead_id, icp_criteria | Fit score + reasoning | No |
+| `generate_outreach_email` | lead_id, template, tone | Personalized email draft | No |
+| `send_email` | draft_id | Sends email | Yes |
+| `update_crm` | lead_id, note | CRM record updated | No |
+| `schedule_followup` | lead_id, date, action | Reminder created | No |
+| `check_replies` | lead_id or all | Reply status summary | No |
+| `generate_next_action` | lead_id | Suggested next step | No |
 
 **Post-MVP:** Full CRM integration (HubSpot / custom), pipeline dashboard, deal tracking.
 
@@ -458,11 +460,16 @@ Registered as `tyrannus-sales`.
 | Relational DB | PostgreSQL 16 |
 | ORM | SQLAlchemy 2.0 + Alembic |
 | Browser Automation | Playwright (CDP, port 9333) |
-| Frontend | Next.js (Phase 1 minimal, Phase 3 expanded) |
-| Package Manager | uv |
-| Testing | pytest + pytest-asyncio |
+| Frontend | Next.js 14+ (Phase 1 minimal, Phase 3 expanded) |
+| Frontend Runtime | Node.js 20+ |
+| Backend Package Manager | uv |
+| Frontend Package Manager | pnpm |
+| Testing (backend) | pytest + pytest-asyncio |
+| Testing (frontend) | Vitest + Playwright |
 
 ## Dependencies
+
+**Backend (pyproject.toml):**
 
 ```toml
 [project]
@@ -480,6 +487,20 @@ dependencies = [
     "python-dotenv>=1.0",
     "httpx>=0.27",
 ]
+```
+
+**Frontend (web/package.json — key dependencies):**
+
+```json
+{
+  "dependencies": {
+    "next": "^14.0",
+    "react": "^18.0",
+    "react-dom": "^18.0",
+    "@tanstack/react-query": "^5.0",
+    "tailwindcss": "^3.4"
+  }
+}
 ```
 
 ## Environment Variables
@@ -516,6 +537,10 @@ claude mcp add tyrannus-sales -- uv run servers/sales-crm/server.py
 # claude mcp add tyrannus-cs -- uv run servers/customer-service/server.py
 # claude mcp add tyrannus-finance -- uv run servers/finance/server.py
 # claude mcp add tyrannus-it -- uv run servers/it-support/server.py
+
+# Start minimal dashboard (Phase 1)
+cd web && pnpm install && pnpm dev
+# Dashboard available at http://localhost:3000
 ```
 
 ## MVP Scope
