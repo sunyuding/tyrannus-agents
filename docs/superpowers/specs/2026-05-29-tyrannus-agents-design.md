@@ -4,10 +4,11 @@
 
 Enterprise AI Agent Automation Platform with 8 modular agents, a cross-system
 orchestrator foundation, a Next.js admin dashboard, and role-based permissions.
-Each agent module is an independent MCP server that can be registered with
-Claude Code, Claude Desktop, Codex CLI, or Codex Desktop. Modules share a
-common core library (database, RAG knowledge base, browser automation,
-approval/audit, permissions).
+The 7 business agent modules (Modules 1-7) are independent MCP servers that
+can be registered with Claude Code, Claude Desktop, Codex CLI, or Codex
+Desktop. Module 8 (Orchestrator) is shared core infrastructure, not a
+standalone server. All modules share a common core library (database, RAG
+knowledge base, browser automation, approval/audit, permissions).
 
 This spec is the engineering translation of
 `docs/8 大 Agent 模組製作流程.docx`. Where trade-offs are made for phased
@@ -16,7 +17,7 @@ delivery, they are called out explicitly.
 **Target user:** Single company (Tyrannus) internal use.
 **LLM provider:** OpenAI API (GPT-4o / GPT-4.1).
 **Backend:** Python (FastAPI + FastMCP).
-**Frontend:** Next.js admin dashboard (Phase 3).
+**Frontend:** Next.js admin dashboard (Phase 1 minimal, expanded in Phase 3).
 **Interface (Phase 1-2):** MCP clients (Claude Code / Desktop / Codex).
 
 ## Architecture
@@ -26,7 +27,7 @@ Users / Managers / Customers
         │
         ▼
 ┌─────────────────────────────────────────────────┐
-│            Next.js Admin Dashboard               │  ← Phase 3
+│            Next.js Admin Dashboard               │  ← Phase 1 minimal
 │  (task status, tool registry, metrics, approvals)│
 └─────────────────────────────────────────────────┘
         │                       │
@@ -104,15 +105,27 @@ tyrannus-agents/
 │   └── config.py                     # Env vars, shared settings
 │
 ├── servers/                           # Independent MCP servers (one per module)
-│   ├── knowledge-base/server.py       # Module 7
-│   ├── social-media/server.py         # Module 5
-│   ├── sales-crm/server.py           # Module 2
-│   ├── marketing/server.py           # Module 3
-│   ├── customer-service/server.py    # Module 1
-│   ├── finance/server.py             # Module 4
-│   └── it-support/server.py          # Module 6
+│   ├── knowledge-base/               # Module 7
+│   │   ├── server.py                 # MCP tool registration & entry point
+│   │   ├── service.py                # Business logic
+│   │   ├── schemas.py                # Input/output schemas
+│   │   └── tests/                    # Module-specific tests
+│   ├── social-media/                  # Module 5 (same structure)
+│   │   ├── server.py
+│   │   ├── service.py
+│   │   ├── schemas.py
+│   │   └── tests/
+│   ├── sales-crm/                     # Module 2 (same structure)
+│   │   ├── server.py
+│   │   ├── service.py
+│   │   ├── schemas.py
+│   │   └── tests/
+│   ├── marketing/                     # Module 3 — Phase 3
+│   ├── customer-service/              # Module 1 — Phase 3
+│   ├── finance/                       # Module 4 — Phase 3
+│   └── it-support/                    # Module 6 — Phase 3
 │
-├── web/                               # Next.js admin dashboard (Phase 3)
+├── web/                               # Next.js admin dashboard (Phase 1 minimal)
 │   └── ...
 ├── docs/
 │   ├── 8 大 Agent 模組製作流程.docx
@@ -141,8 +154,8 @@ is built as core infrastructure from Phase 1, not as a future module.
 - **Audit trail**: Every decision and tool call is logged.
 
 **Phase 1 scope (skeleton):** Intent classification + single-module routing +
-approval gate + logging. Multi-step decomposition and cross-module chaining
-added in Phase 2.
+approval gate + retry with exponential backoff + error handling + audit
+logging. Multi-step decomposition and cross-module chaining added in Phase 2.
 
 ### Database (core/db/)
 
@@ -359,7 +372,7 @@ Registered as `tyrannus-social`. Extends one-post.
 5. `post_facebook(draft_id=...)` → approval gate → awaiting approval
 6. User approves → Browser CDP publishes → status=published
 
-### Module 3: Marketing Content (servers/marketing/)
+### Module 3: Marketing Content (servers/marketing/) — Phase 3
 
 Registered as `tyrannus-marketing`.
 
@@ -445,7 +458,7 @@ Registered as `tyrannus-sales`.
 | Relational DB | PostgreSQL 16 |
 | ORM | SQLAlchemy 2.0 + Alembic |
 | Browser Automation | Playwright (CDP, port 9333) |
-| Frontend | Next.js (Phase 3) |
+| Frontend | Next.js (Phase 1 minimal, Phase 3 expanded) |
 | Package Manager | uv |
 | Testing | pytest + pytest-asyncio |
 
@@ -493,49 +506,81 @@ uv run alembic upgrade head
   --remote-debugging-port=9333 \
   --user-data-dir="$HOME/Library/Application Support/Google/Chrome/SocialMCP/"
 
-# Register MCP servers
+# Register MCP servers (Phase 1-2)
 claude mcp add tyrannus-kb -- uv run servers/knowledge-base/server.py
 claude mcp add tyrannus-social -- uv run servers/social-media/server.py
 claude mcp add tyrannus-sales -- uv run servers/sales-crm/server.py
-claude mcp add tyrannus-marketing -- uv run servers/marketing/server.py
+
+# Phase 3 servers (register when implemented)
+# claude mcp add tyrannus-marketing -- uv run servers/marketing/server.py
+# claude mcp add tyrannus-cs -- uv run servers/customer-service/server.py
+# claude mcp add tyrannus-finance -- uv run servers/finance/server.py
+# claude mcp add tyrannus-it -- uv run servers/it-support/server.py
+```
+
+## MVP Scope
+
+The fastest useful version follows the DOCX MVP target:
+
+1. **Knowledge Base Agent** — upload documents and answer questions with cited sources.
+2. **Self-Media Agent** — input a topic and generate copy, short-video script, storyboard, narration, cover prompt, and platform captions.
+3. **Publishing Schedule Agent** — route approved drafts to scheduled or immediate publishing through API or Browser Agent.
+4. **Minimal Dashboard** — show task status, approvals, published results, and failures.
+
+MVP flow:
+
+```text
+Upload document / input topic
+→ Agent reads knowledge base
+→ Generate self-media content
+→ Generate short-video script
+→ Generate cover prompt
+→ Generate platform captions
+→ Human review
+→ API publish or Browser Agent publish
+→ Dashboard displays result
 ```
 
 ## Implementation Phases
 
-### Phase 1: Foundation (Orchestrator + Knowledge Base)
+### Phase 1: Foundation Agent OS
 
 Per DOCX: build the orchestrator as Day-1 infrastructure, then the knowledge
 base as the shared brain for all modules.
 
 1. **Core setup** — pyproject.toml, uv workspace, docker-compose, .env.example
 2. **core/db** — All MVP tables (users, roles, tasks, approvals, tool_calls, documents, document_chunks, assets, logs), Alembic migrations
-3. **core/orchestrator (skeleton)** — Intent classification, single-module routing, approval gate, audit logging
+3. **core/orchestrator (skeleton)** — Intent classification, single-module routing, approval gate, retry/error handling with backoff, audit logging
 4. **core/knowledge** — ChromaDB ingest + search + compare + summarize + decision brief
 5. **core/approval** — Approval workflow with role-based permissions
 6. **core/auth** — Role-based access control
-7. **servers/knowledge-base** — MCP server with all KB tools
-8. **Integration test** — Upload doc → search → summarize → decision brief
+7. **MCP tool registry** — Module/tool schema registration, whitelist, permission mapping
+8. **Browser Agent task layer** — Queue model, task status, screenshot/log hooks
+9. **web/** — Minimal Next.js dashboard for tasks, approvals, logs, and tool registry
+10. **servers/knowledge-base** — MCP server with all KB tools
+11. **Integration test** — Upload doc → search → summarize → decision brief
 
 ### Phase 2: High-ROI Modules
 
-Per DOCX: knowledge base (done), social media content factory, sales CRM.
+Per DOCX: knowledge base (done in Phase 1), self-media content factory, and sales CRM.
 
 1. **core/tools/browser** — Port one-post CDP logic into core
 2. **servers/social-media** — Full content generation + approval + publishing pipeline
 3. **servers/sales-crm** — Prospect search, outreach generation, CRM logging
-4. **servers/marketing** — Campaign strategy, copywriting, content calendar
+4. **Publishing schedule workflow** — Schedule approved content to Facebook, Instagram, YouTube/TikTok post-MVP hooks
 5. **core/orchestrator (expanded)** — Multi-step decomposition, cross-module chaining
-6. **Integration test** — Campaign → post generation → approval → publish; Prospect → outreach → send
+6. **Integration test** — Topic/document → post/video script/cover prompt → approval → publish; Prospect → outreach → send
 
 ### Phase 3: Enterprise Operations + Dashboard
 
-1. **web/** — Next.js admin dashboard (task tracker, approval UI, metrics, tool registry)
+1. **web/** — Expand dashboard with metrics, retries, module health, and CRM/content views
 2. **servers/customer-service** — FAQ search, order lookup, ticket creation
-3. **servers/finance** — Payment matching, overdue detection, reports
-4. **servers/it-support** — Access requests, provisioning, audit
-5. **core/tools/tts + stt** — Voice I/O for personal assistant mode
-6. **core/tools/video** — Video generation, subtitle burning, thumbnail creation
-7. **Post-MVP tables** — conversations, messages, reports, voice_logs, contacts, deals
+3. **servers/marketing** — Campaign strategy, copywriting, content calendar, metrics optimization
+4. **servers/finance** — Payment matching, overdue detection, reports
+5. **servers/it-support** — Access requests, provisioning, audit
+6. **core/tools/tts + stt** — Voice I/O for personal assistant mode
+7. **core/tools/video** — Video generation, subtitle burning, thumbnail creation
+8. **Post-MVP tables** — conversations, messages, reports, voice_logs, contacts, deals
 
 ## Security
 
