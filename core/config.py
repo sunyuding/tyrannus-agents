@@ -3,6 +3,11 @@
 import os
 from dataclasses import dataclass, field
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -27,6 +32,14 @@ class Settings:
             os.path.expanduser(
                 "~/Library/Application Support/Google/Chrome/SocialMCP/"
             ),
+        )
+    )
+    OPENAI_MODEL: str = field(
+        default_factory=lambda: os.environ.get("OPENAI_MODEL", "gpt-4o")
+    )
+    DRAFTS_DIR: str = field(
+        default_factory=lambda: os.environ.get(
+            "DRAFTS_DIR", os.path.expanduser("~/.tyrannus/drafts")
         )
     )
 

@@ -16,6 +16,15 @@ from playwright.async_api import async_playwright
 from core.config import settings
 
 
+async def _disconnect_browser(browser) -> None:
+    """Release the CDP connection without intentionally terminating Chrome."""
+    disconnect = getattr(browser, "disconnect", None)
+    if disconnect is not None:
+        await disconnect()
+        return
+    await browser.close()
+
+
 def is_chromium_running() -> bool:
     """Check if Chrome is running with CDP on the configured port."""
     try:
@@ -176,34 +185,32 @@ async def post_facebook(message: str) -> str:
             f"http://localhost:{settings.CHROME_CDP_PORT}"
         )
 
-        fb_page = await _get_facebook_page(browser)
-        if not fb_page:
-            await browser.close()
-            return "No Facebook page found. Open facebook.com in Chrome first."
+        try:
+            fb_page = await _get_facebook_page(browser)
+            if not fb_page:
+                return "No Facebook page found. Open facebook.com in Chrome first."
 
-        await fb_page.goto("https://www.facebook.com", wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+            await fb_page.goto("https://www.facebook.com", wait_until="domcontentloaded")
+            await asyncio.sleep(3)
 
-        if await _detect_login_wall(fb_page):
-            await browser.close()
-            return "Not logged in. Log in to Facebook first."
+            if await _detect_login_wall(fb_page):
+                return "Not logged in. Log in to Facebook first."
 
-        if not await _click_composer(fb_page):
-            await browser.close()
-            return "Could not open composer."
+            if not await _click_composer(fb_page):
+                return "Could not open composer."
 
-        await asyncio.sleep(3)
+            await asyncio.sleep(3)
 
-        if not await _type_in_composer(fb_page, message):
-            await browser.close()
-            return "Could not find text editor in composer dialog."
+            if not await _type_in_composer(fb_page, message):
+                return "Could not find text editor in composer dialog."
 
-        await asyncio.sleep(2)
-        await _click_next_if_needed(fb_page)
-        await _click_post_button(fb_page)
+            await asyncio.sleep(2)
+            await _click_next_if_needed(fb_page)
+            await _click_post_button(fb_page)
 
-        success = await _wait_for_dialog_close(fb_page)
-        await browser.close()
+            success = await _wait_for_dialog_close(fb_page)
+        finally:
+            await _disconnect_browser(browser)
 
         if success:
             return "Post published successfully!"
