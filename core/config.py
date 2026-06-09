@@ -42,6 +42,34 @@ class Settings:
             "DRAFTS_DIR", os.path.expanduser("~/.tyrannus/drafts")
         )
     )
+    ARK_API_KEY: str = field(
+        default_factory=lambda: os.environ.get("ARK_API_KEY", "")
+    )
+    ARK_BASE_URL: str = field(
+        default_factory=lambda: os.environ.get(
+            "ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
+        )
+    )
+    SEEDANCE_MODEL: str = field(
+        default_factory=lambda: os.environ.get(
+            "SEEDANCE_MODEL", "doubao-seedance-2-0-260128"
+        )
+    )
+    SEEDANCE_POLL_INTERVAL: int = field(
+        default_factory=lambda: int(
+            os.environ.get("SEEDANCE_POLL_INTERVAL", "10")
+        )
+    )
+    SEEDANCE_POLL_TIMEOUT: int = field(
+        default_factory=lambda: int(
+            os.environ.get("SEEDANCE_POLL_TIMEOUT", "600")
+        )
+    )
+    AI_FILM_DIR: str = field(
+        default_factory=lambda: os.environ.get(
+            "AI_FILM_DIR", os.path.expanduser("~/.tyrannus/ai_film")
+        )
+    )
 
 
 settings = Settings()
